@@ -483,6 +483,38 @@ describe("searchExa", () => {
 		expect(calledUrl).not.toContain("exaApiKey=");
 	});
 
+	it("keeps 'Title:' lines inside Text body when parsing MCP plain-text content", async () => {
+		delete process.env.EXA_API_KEY;
+		const payloadText = [
+			"Title: Plain Alpha",
+			"URL: https://plain-alpha.com",
+			"Text: Alpha line 1",
+			"Title: heading inside body",
+			"Alpha line 2",
+			"",
+			"Title: Plain Beta",
+			"URL: https://plain-beta.com",
+			"Text: Beta snippet",
+		].join("\n");
+		// @ts-expect-error - test mock doesn't need fetch.preconnect
+		vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+			return new Response(
+				JSON.stringify({
+					jsonrpc: "2.0",
+					id: "mcp-content-embedded-title",
+					result: { content: [{ type: "text", text: payloadText }] },
+				}),
+				{ status: 200, headers: { "Content-Type": "application/json" } },
+			);
+		});
+
+		const result = await searchExa({ query: "embedded title line" });
+		expect(result.provider).toBe("exa");
+		expect(result.sources).toHaveLength(2);
+		expect(result.sources[0]?.snippet).toContain("Title: heading inside body");
+		expect(result.sources[0]?.snippet).toContain("Alpha line 2");
+	});
+
 	it("runSearchQuery with provider=exa succeeds without EXA_API_KEY for MCP plain text content", async () => {
 		delete process.env.EXA_API_KEY;
 		const payloadText = [

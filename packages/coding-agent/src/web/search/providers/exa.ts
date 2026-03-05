@@ -86,7 +86,7 @@ function parseExaMcpTextPayload(payload: unknown): ExaSearchResponse | null {
 
 	const sections = textBlocks
 		.join("\n\n")
-		.split(/\n(?=Title:\s)/)
+		.split(/\n{2,}(?=Title:\s*[^\n]*(?:\n(?:URL|Author|Published Date|Text):))/)
 		.map(section => section.trim())
 		.filter(section => section.startsWith("Title:"));
 
