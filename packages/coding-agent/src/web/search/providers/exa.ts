@@ -78,7 +78,8 @@ function parseExaMcpTextPayload(payload: unknown): ExaSearchResponse | null {
 	const textBlocks = content
 		.map(item => {
 			const part = asRecord(item);
-			return typeof part?.text === "string" ? part.text.trim() : "";
+			const text = typeof part?.text === "string" ? part.text : "";
+			return text.replace(/\r\n?/g, "\n").trim();
 		})
 		.filter(text => text.length > 0);
 

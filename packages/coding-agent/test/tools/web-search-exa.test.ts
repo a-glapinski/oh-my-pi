@@ -483,6 +483,36 @@ describe("searchExa", () => {
 		expect(calledUrl).not.toContain("exaApiKey=");
 	});
 
+	it("splits MCP plain-text records with CRLF line endings", async () => {
+		delete process.env.EXA_API_KEY;
+		const payloadText = [
+			"Title: CRLF Alpha",
+			"URL: https://crlf-alpha.com",
+			"Text: First result",
+			"",
+			"Title: CRLF Beta",
+			"URL: https://crlf-beta.com",
+			"Text: Second result",
+		].join("\r\n");
+		// @ts-expect-error - test mock doesn't need fetch.preconnect
+		vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+			return new Response(
+				JSON.stringify({
+					jsonrpc: "2.0",
+					id: "mcp-content-crlf",
+					result: { content: [{ type: "text", text: payloadText }] },
+				}),
+				{ status: 200, headers: { "Content-Type": "application/json" } },
+			);
+		});
+
+		const result = await searchExa({ query: "crlf payload" });
+		expect(result.provider).toBe("exa");
+		expect(result.sources).toHaveLength(2);
+		expect(result.sources[0]?.url).toBe("https://crlf-alpha.com");
+		expect(result.sources[1]?.url).toBe("https://crlf-beta.com");
+	});
+
 	it("keeps 'Title:' lines inside Text body when parsing MCP plain-text content", async () => {
 		delete process.env.EXA_API_KEY;
 		const payloadText = [
