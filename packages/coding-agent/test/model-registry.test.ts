@@ -3,14 +3,17 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Effort, type OpenAICompat, type ThinkingConfig } from "@oh-my-pi/pi-ai";
+import { getBundledModel } from "@oh-my-pi/pi-ai/models";
 import { kNoAuth, MODEL_ROLES, ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
-import { Snowflake } from "@oh-my-pi/pi-utils";
+import { getAgentDir, Snowflake, setAgentDir } from "@oh-my-pi/pi-utils";
 
 describe("ModelRegistry", () => {
 	let tempDir: string;
 	let modelsJsonPath: string;
 	let authStorage: AuthStorage;
+
+	let originalAgentDir: string;
 
 	test("commit role includes a visible badge tag", () => {
 		expect(MODEL_ROLES.commit.tag).toBe("COMMIT");
@@ -22,9 +25,12 @@ describe("ModelRegistry", () => {
 		fs.mkdirSync(tempDir, { recursive: true });
 		modelsJsonPath = path.join(tempDir, "models.json");
 		authStorage = await AuthStorage.create(path.join(tempDir, "testauth.db"));
+		originalAgentDir = getAgentDir();
+		setAgentDir(tempDir);
 	});
 
 	afterEach(() => {
+		setAgentDir(originalAgentDir);
 		if (tempDir && fs.existsSync(tempDir)) {
 			fs.rmSync(tempDir, { recursive: true });
 		}
@@ -661,6 +667,62 @@ describe("ModelRegistry", () => {
 			expect(model.baseUrl).toBe(initialBaseUrl);
 		});
 	});
+	describe("gpt-5.4 context windows", () => {
+		test("preserves bundled provider-specific gpt-5.4 context windows", () => {
+			const bundledCopilot = getBundledModel("github-copilot", "gpt-5.4");
+			const bundledCodex = getBundledModel("openai-codex", "gpt-5.4");
+			if (!bundledCopilot || !bundledCodex) {
+				throw new Error("Expected bundled gpt-5.4 models to exist");
+			}
+
+			const registry = new ModelRegistry(authStorage, modelsJsonPath);
+
+			expect(registry.find("github-copilot", "gpt-5.4")?.contextWindow).toBe(bundledCopilot.contextWindow);
+			expect(registry.find("openai-codex", "gpt-5.4")?.contextWindow).toBe(bundledCodex.contextWindow);
+		});
+
+		test("preserves dynamically discovered github-copilot gpt-5.4 context window", async () => {
+			const discoveredContextWindow = 345_678;
+			const discoveredMaxTokens = 54_321;
+			authStorage.setRuntimeApiKey("github-copilot", "copilot-test-key");
+			const originalFetch = globalThis.fetch;
+			globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+				const url = String(input);
+				if (url === "https://api.individual.githubcopilot.com/models") {
+					const headers = new Headers(init?.headers);
+					expect(init?.method).toBe("GET");
+					expect(headers.get("Authorization")).toBe("Bearer copilot-test-key");
+					return new Response(
+						JSON.stringify({
+							data: [
+								{
+									id: "gpt-5.4",
+									name: "GPT-5.4",
+									context_length: discoveredContextWindow,
+									max_completion_tokens: discoveredMaxTokens,
+								},
+							],
+						}),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					);
+				}
+				throw new Error(`Unexpected URL: ${url}`);
+			}) as unknown as typeof fetch;
+
+			try {
+				const registry = new ModelRegistry(authStorage, modelsJsonPath);
+				await registry.refresh();
+
+				const discovered = registry.find("github-copilot", "gpt-5.4");
+				expect(discovered?.contextWindow).toBe(discoveredContextWindow);
+				expect(discovered?.contextWindow).not.toBe(1_000_000);
+				expect(discovered?.maxTokens).toBe(discoveredMaxTokens);
+			} finally {
+				globalThis.fetch = originalFetch;
+			}
+		});
+	});
+
 	describe("runtime discovery", () => {
 		test("auto-discovers ollama models without provider config", async () => {
 			const originalFetch = globalThis.fetch;
