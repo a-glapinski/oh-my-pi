@@ -227,7 +227,7 @@ const OPTION_PROVIDERS: Partial<Record<SettingPath, OptionProvider>> = {
 			description:
 				"Priority: Perplexity > Exa > Brave > Jina > Kimi > Anthropic > Gemini > Codex > Z.AI > Synthetic",
 		},
-		{ value: "exa", label: "Exa", description: "Requires EXA_API_KEY" },
+		{ value: "exa", label: "Exa", description: "Uses Exa API when EXA_API_KEY is set; falls back to Exa MCP" },
 		{ value: "brave", label: "Brave", description: "Requires BRAVE_API_KEY" },
 		{ value: "jina", label: "Jina", description: "Requires JINA_API_KEY" },
 		{ value: "kimi", label: "Kimi", description: "Requires MOONSHOT_SEARCH_API_KEY or MOONSHOT_API_KEY" },
