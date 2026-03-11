@@ -166,6 +166,7 @@ export type AgentSessionEvent =
 			errorMessage?: string;
 			/** True when compaction was skipped for a benign reason (no model, no candidates, nothing to compact). */
 			skipped?: boolean;
+			warningMessage?: string;
 	  }
 	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
 	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
@@ -1509,6 +1510,7 @@ export class AgentSession {
 				willRetry: event.willRetry,
 				errorMessage: event.errorMessage,
 				skipped: event.skipped,
+				warningMessage: event.warningMessage,
 			});
 		} else if (event.type === "auto_retry_start") {
 			await this.#extensionRunner.emit({
@@ -4239,6 +4241,7 @@ export class AgentSession {
 					aborted: false,
 					willRetry: false,
 					skipped: true,
+					errorMessage: "Auto context-full maintenance skipped: no model selected",
 				});
 				return;
 			}
@@ -4252,6 +4255,7 @@ export class AgentSession {
 					aborted: false,
 					willRetry: false,
 					skipped: true,
+					errorMessage: "Auto context-full maintenance skipped: no models available",
 				});
 				return;
 			}
@@ -4448,25 +4452,6 @@ export class AgentSession {
 				fromExtension,
 				preserveData,
 			);
-			const newEntries = this.sessionManager.getEntries();
-			const sessionContext = this.sessionManager.buildSessionContext();
-			this.agent.replaceMessages(sessionContext.messages);
-			this.#syncTodoPhasesFromBranch();
-			this.#closeCodexProviderSessionsForHistoryRewrite();
-
-			// Get the saved compaction entry for the hook
-			const savedCompactionEntry = newEntries.find(e => e.type === "compaction" && e.summary === summary) as
-				| CompactionEntry
-				| undefined;
-
-			if (this.#extensionRunner && savedCompactionEntry) {
-				await this.#extensionRunner.emit({
-					type: "session_compact",
-					compactionEntry: savedCompactionEntry,
-					fromExtension,
-				});
-			}
-
 			const result: CompactionResult = {
 				summary,
 				shortSummary,
@@ -4475,7 +4460,63 @@ export class AgentSession {
 				details,
 				preserveData,
 			};
-			await this.#emitSessionEvent({ type: "auto_compaction_end", action, result, aborted: false, willRetry });
+			// Phase 1: Critical session refresh — live state must be usable for the
+			// UI to rebuild and the agent to continue.
+			try {
+				const sessionContext = this.sessionManager.buildSessionContext();
+				this.agent.replaceMessages(sessionContext.messages);
+			} catch (error) {
+				// Compaction is persisted, but live session state could not be refreshed.
+				// Emit without result so the event controller does not attempt a UI rebuild.
+				const msg = error instanceof Error ? error.message : "session refresh failed";
+				await this.#emitSessionEvent({
+					type: "auto_compaction_end",
+					action,
+					result: undefined,
+					aborted: false,
+					willRetry: false,
+					errorMessage:
+						reason === "overflow"
+							? `Context overflow recovery completed, but session could not be refreshed: ${msg}`
+							: `Auto-compaction completed, but session could not be refreshed: ${msg}`,
+				});
+				return;
+			}
+
+			// Phase 2: Non-critical follow-on work. Session state is already refreshed,
+			// so failures here are warnings — the agent can still continue.
+			let warningMessage: string | undefined;
+			try {
+				this.#syncTodoPhasesFromBranch();
+				this.#closeCodexProviderSessionsForHistoryRewrite();
+
+				const savedCompactionEntry = this.sessionManager
+					.getEntries()
+					.find(e => e.type === "compaction" && e.summary === summary) as CompactionEntry | undefined;
+
+				if (this.#extensionRunner && savedCompactionEntry) {
+					await this.#extensionRunner.emit({
+						type: "session_compact",
+						compactionEntry: savedCompactionEntry,
+						fromExtension,
+					});
+				}
+			} catch (error) {
+				const msg = error instanceof Error ? error.message : "unknown error";
+				warningMessage =
+					reason === "overflow"
+						? `Context overflow recovery completed, but post-compaction tasks failed: ${msg}`
+						: `Auto-compaction completed, but post-compaction tasks failed: ${msg}`;
+			}
+
+			await this.#emitSessionEvent({
+				type: "auto_compaction_end",
+				action,
+				result,
+				aborted: false,
+				willRetry,
+				warningMessage,
+			});
 
 			if (!willRetry && compactionSettings.autoContinue !== false) {
 				const continuePrompt = async () => {

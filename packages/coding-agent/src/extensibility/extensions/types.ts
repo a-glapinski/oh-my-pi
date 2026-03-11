@@ -572,6 +572,7 @@ export interface AutoCompactionEndEvent {
 	errorMessage?: string;
 	/** True when compaction was skipped for a benign reason (no model, no candidates, nothing to compact). */
 	skipped?: boolean;
+	warningMessage?: string;
 }
 
 /** Fired when auto-retry starts */
