@@ -49,7 +49,6 @@ describe("AgentSession handoff", () => {
 			sessionManager,
 			settings: Settings.isolated({
 				"compaction.enabled": true,
-				"compaction.autoContinue": false,
 			}),
 			modelRegistry,
 		});
@@ -366,7 +365,6 @@ describe("AgentSession handoff", () => {
 			sessionManager,
 			settings: Settings.isolated({
 				"compaction.enabled": true,
-				"compaction.autoContinue": false,
 				"compaction.strategy": "handoff",
 				"compaction.thresholdPercent": 1,
 				"contextPromotion.enabled": false,

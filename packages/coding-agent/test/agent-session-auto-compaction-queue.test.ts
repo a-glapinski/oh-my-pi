@@ -9,6 +9,7 @@ import { loadExtensions } from "@oh-my-pi/pi-coding-agent/extensibility/extensio
 import { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
 import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
+import * as compaction from "@oh-my-pi/pi-coding-agent/session/compaction";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { getProjectAgentDir, TempDir, withTimeout } from "@oh-my-pi/pi-utils";
 
@@ -39,6 +40,27 @@ function createThresholdAssistantMessage() {
 			totalTokens: 191000,
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		},
+		timestamp: Date.now(),
+	};
+}
+
+function createOverflowAssistantMessage(model: NonNullable<AgentSession["model"]>) {
+	return {
+		role: "assistant" as const,
+		content: [{ type: "text" as const, text: "overflow" }],
+		api: model.api,
+		provider: model.provider,
+		model: model.id,
+		usage: {
+			input: 120000,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 120000,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "error" as const,
+		errorMessage: "context_length_exceeded: Your input exceeds the context window of this model.",
 		timestamp: Date.now(),
 	};
 }
@@ -133,7 +155,6 @@ describe("AgentSession auto-compaction queue resume", () => {
 			agent,
 			sessionManager,
 			settings: Settings.isolated({
-				"compaction.autoContinue": false,
 				"todo.reminders": true,
 				"todo.reminders.max": 3,
 			}),
@@ -248,6 +269,7 @@ describe("AgentSession auto-compaction queue resume", () => {
 			aborted: false,
 			willRetry: false,
 			result: undefined,
+			liveStateStale: true,
 			errorMessage: "Auto-compaction completed, but session could not be refreshed: build context failed",
 		});
 		expect(endEvent).not.toMatchObject({ warningMessage: expect.any(String) });
@@ -310,7 +332,137 @@ describe("AgentSession auto-compaction queue resume", () => {
 			warningMessage: "Auto-compaction completed, but post-compaction tasks failed: todo sync failed",
 		});
 		expect(endEvent).not.toMatchObject({ errorMessage: expect.any(String) });
+		expect(endEvent?.liveStateStale).toBeFalsy();
 	});
+	it("emits errorMessage when auto-compaction loses its selected model before execution", async () => {
+		let endEvent: Extract<AgentSessionEvent, { type: "auto_compaction_end" }> | undefined;
+		const { promise: compactionDone, resolve: onCompactionDone } = Promise.withResolvers<void>();
+		session.subscribe(event => {
+			if (event.type === "auto_compaction_end") {
+				endEvent = event;
+				onCompactionDone();
+			}
+		});
+
+		const model = session.model;
+		if (!model) throw new Error("Expected session model to be set");
+
+		let modelReads = 0;
+		Object.defineProperty(session, "model", {
+			configurable: true,
+			get: () => {
+				modelReads++;
+				// #checkCompaction reads the model four times before #runAutoCompaction starts.
+				return modelReads <= 4 ? model : undefined;
+			},
+		});
+
+		const assistantMsg = createThresholdAssistantMessage();
+		session.agent.emitExternalEvent({ type: "message_end", message: assistantMsg });
+		session.agent.emitExternalEvent({ type: "agent_end", messages: [assistantMsg] });
+
+		await withTimeout(compactionDone, 1000, "Auto-compaction no-model exit timed out");
+
+		expect(endEvent).toMatchObject({
+			type: "auto_compaction_end",
+			action: "context-full",
+			aborted: false,
+			willRetry: false,
+			result: undefined,
+			errorMessage: "Auto context-full maintenance skipped: no model selected",
+		});
+		expect(endEvent?.liveStateStale).toBeFalsy();
+	});
+
+	it("emits errorMessage when no compaction model is available", async () => {
+		let endEvent: Extract<AgentSessionEvent, { type: "auto_compaction_end" }> | undefined;
+		const { promise: compactionDone, resolve: onCompactionDone } = Promise.withResolvers<void>();
+		session.subscribe(event => {
+			if (event.type === "auto_compaction_end") {
+				endEvent = event;
+				onCompactionDone();
+			}
+		});
+
+		vi.spyOn(modelRegistry, "getAvailable").mockReturnValue([]);
+
+		const assistantMsg = createThresholdAssistantMessage();
+		session.agent.emitExternalEvent({ type: "message_end", message: assistantMsg });
+		session.agent.emitExternalEvent({ type: "agent_end", messages: [assistantMsg] });
+
+		await withTimeout(compactionDone, 1000, "Auto-compaction no-available-models exit timed out");
+
+		expect(endEvent).toMatchObject({
+			type: "auto_compaction_end",
+			action: "context-full",
+			aborted: false,
+			willRetry: false,
+			result: undefined,
+			errorMessage: "Auto context-full maintenance skipped: no models available",
+		});
+		expect(endEvent?.liveStateStale).toBeFalsy();
+	});
+
+	it("stays silent when threshold auto-compaction has nothing to compact", async () => {
+		let endEvent: Extract<AgentSessionEvent, { type: "auto_compaction_end" }> | undefined;
+		const { promise: compactionDone, resolve: onCompactionDone } = Promise.withResolvers<void>();
+		session.subscribe(event => {
+			if (event.type === "auto_compaction_end") {
+				endEvent = event;
+				onCompactionDone();
+			}
+		});
+
+		vi.spyOn(compaction, "analyzeCompactionPreparation").mockReturnValue({ kind: "nothing_to_compact" });
+
+		const assistantMsg = createThresholdAssistantMessage();
+		session.agent.emitExternalEvent({ type: "message_end", message: assistantMsg });
+		session.agent.emitExternalEvent({ type: "agent_end", messages: [assistantMsg] });
+
+		await withTimeout(compactionDone, 1000, "Auto-compaction no-op exit timed out");
+
+		expect(endEvent).toMatchObject({
+			type: "auto_compaction_end",
+			action: "context-full",
+			aborted: false,
+			willRetry: false,
+			result: undefined,
+		});
+		expect(endEvent).not.toMatchObject({ errorMessage: expect.any(String) });
+		expect(endEvent?.liveStateStale).toBeFalsy();
+	});
+
+	it("emits errorMessage when overflow recovery has no history left to compact", async () => {
+		let endEvent: Extract<AgentSessionEvent, { type: "auto_compaction_end" }> | undefined;
+		const { promise: compactionDone, resolve: onCompactionDone } = Promise.withResolvers<void>();
+		session.subscribe(event => {
+			if (event.type === "auto_compaction_end") {
+				endEvent = event;
+				onCompactionDone();
+			}
+		});
+
+		const model = session.model;
+		if (!model) throw new Error("Expected session model to be set");
+
+		vi.spyOn(compaction, "analyzeCompactionPreparation").mockReturnValue({ kind: "nothing_to_compact" });
+
+		const assistantMsg = createOverflowAssistantMessage(model);
+		session.agent.emitExternalEvent({ type: "message_end", message: assistantMsg });
+		session.agent.emitExternalEvent({ type: "agent_end", messages: [assistantMsg] });
+
+		await withTimeout(compactionDone, 1000, "Auto-compaction overflow no-history exit timed out");
+
+		expect(endEvent).toMatchObject({
+			type: "auto_compaction_end",
+			action: "context-full",
+			aborted: false,
+			willRetry: false,
+			result: undefined,
+			errorMessage: "Context overflow recovery failed: no additional history could be compacted",
+		});
+	});
+
 	it("forwards todo reminder lifecycle signals to extensions", async () => {
 		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
 

@@ -121,6 +121,7 @@ import { resolveFileDisplayMode } from "../utils/file-display-mode";
 import { extractFileMentions, generateFileMentionMessages } from "../utils/file-mentions";
 import { buildNamedToolChoice } from "../utils/tool-choice";
 import {
+	analyzeCompactionPreparation,
 	type CompactionResult,
 	calculateContextTokens,
 	calculatePromptTokens,
@@ -128,7 +129,6 @@ import {
 	compact,
 	estimateTokens,
 	generateBranchSummary,
-	prepareCompaction,
 	shouldCompact,
 } from "./compaction";
 import { DEFAULT_PRUNE_CONFIG, pruneToolOutputs } from "./compaction/pruning";
@@ -167,6 +167,7 @@ export type AgentSessionEvent =
 			/** True when compaction was skipped for a benign reason (no model, no candidates, nothing to compact). */
 			skipped?: boolean;
 			warningMessage?: string;
+			liveStateStale?: boolean;
 	  }
 	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
 	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
@@ -1511,6 +1512,7 @@ export class AgentSession {
 				errorMessage: event.errorMessage,
 				skipped: event.skipped,
 				warningMessage: event.warningMessage,
+				liveStateStale: event.liveStateStale,
 			});
 		} else if (event.type === "auto_retry_start") {
 			await this.#extensionRunner.emit({
@@ -3419,15 +3421,18 @@ export class AgentSession {
 
 			const pathEntries = this.sessionManager.getBranch();
 
-			const preparation = prepareCompaction(pathEntries, compactionSettings);
-			if (!preparation) {
-				// Check why we can't compact
-				const lastEntry = pathEntries[pathEntries.length - 1];
-				if (lastEntry?.type === "compaction") {
-					throw new Error("Already compacted");
+			const preparationResult = analyzeCompactionPreparation(pathEntries, compactionSettings);
+			if (preparationResult.kind !== "ready") {
+				switch (preparationResult.kind) {
+					case "already_compacted":
+						throw new Error("Already compacted");
+					case "session_needs_migration":
+						throw new Error("Session needs migration before compaction can run");
+					case "nothing_to_compact":
+						throw new Error("Nothing to compact (session too small)");
 				}
-				throw new Error("Nothing to compact (session too small)");
 			}
+			const preparation = preparationResult.preparation;
 
 			let hookCompaction: CompactionResult | undefined;
 			let fromExtension = false;
@@ -4262,8 +4267,16 @@ export class AgentSession {
 
 			const pathEntries = this.sessionManager.getBranch();
 
-			const preparation = prepareCompaction(pathEntries, compactionSettings);
-			if (!preparation) {
+			const preparationResult = analyzeCompactionPreparation(pathEntries, compactionSettings);
+			if (preparationResult.kind !== "ready") {
+				const errorMessage =
+					preparationResult.kind === "session_needs_migration"
+						? reason === "overflow"
+							? "Context overflow recovery failed: session needs migration before compaction can run"
+							: "Auto context-full maintenance failed: session needs migration before compaction can run"
+						: reason === "overflow"
+							? "Context overflow recovery failed: no additional history could be compacted"
+							: undefined;
 				await this.#emitSessionEvent({
 					type: "auto_compaction_end",
 					action,
@@ -4271,6 +4284,7 @@ export class AgentSession {
 					aborted: false,
 					willRetry: false,
 					skipped: true,
+					errorMessage,
 				});
 				if (!willRetry && this.agent.hasQueuedMessages()) {
 					this.#scheduleAgentContinue({
@@ -4281,6 +4295,7 @@ export class AgentSession {
 				}
 				return;
 			}
+			const preparation = preparationResult.preparation;
 
 			let hookCompaction: CompactionResult | undefined;
 			let fromExtension = false;
@@ -4475,6 +4490,7 @@ export class AgentSession {
 					result: undefined,
 					aborted: false,
 					willRetry: false,
+					liveStateStale: true,
 					errorMessage:
 						reason === "overflow"
 							? `Context overflow recovery completed, but session could not be refreshed: ${msg}`
@@ -4483,24 +4499,29 @@ export class AgentSession {
 				return;
 			}
 
+			// Emit session_compact hook before non-critical follow-on work.
+			// This fires even if todo sync or codex cleanup fails below.
+			// Note: manual compaction emits this hook AFTER todo sync (no try/catch).
+			// Auto-compaction is intentionally more resilient: the hook fires as long
+			// as the compaction entry was persisted and live state was refreshed.
+			const savedCompactionEntry = this.sessionManager
+				.getEntries()
+				.find(e => e.type === "compaction" && e.summary === summary) as CompactionEntry | undefined;
+
+			if (this.#extensionRunner && savedCompactionEntry) {
+				await this.#extensionRunner.emit({
+					type: "session_compact",
+					compactionEntry: savedCompactionEntry,
+					fromExtension,
+				});
+			}
+
 			// Phase 2: Non-critical follow-on work. Session state is already refreshed,
-			// so failures here are warnings — the agent can still continue.
+			// so failures here are warnings, the agent can still continue.
 			let warningMessage: string | undefined;
 			try {
 				this.#syncTodoPhasesFromBranch();
 				this.#closeCodexProviderSessionsForHistoryRewrite();
-
-				const savedCompactionEntry = this.sessionManager
-					.getEntries()
-					.find(e => e.type === "compaction" && e.summary === summary) as CompactionEntry | undefined;
-
-				if (this.#extensionRunner && savedCompactionEntry) {
-					await this.#extensionRunner.emit({
-						type: "session_compact",
-						compactionEntry: savedCompactionEntry,
-						fromExtension,
-					});
-				}
 			} catch (error) {
 				const msg = error instanceof Error ? error.message : "unknown error";
 				warningMessage =
@@ -4517,29 +4538,6 @@ export class AgentSession {
 				willRetry,
 				warningMessage,
 			});
-
-			if (!willRetry && compactionSettings.autoContinue !== false) {
-				const continuePrompt = async () => {
-					await this.#promptWithMessage(
-						{
-							role: "developer",
-							content: [{ type: "text", text: "Continue if you have next steps." }],
-							attribution: "agent",
-							timestamp: Date.now(),
-						},
-						"Continue if you have next steps.",
-						{ skipPostPromptRecoveryWait: true },
-					);
-				};
-				this.#schedulePostPromptTask(
-					async signal => {
-						await Promise.resolve();
-						if (signal.aborted) return;
-						await continuePrompt();
-					},
-					{ generation },
-				);
-			}
 
 			if (willRetry) {
 				const messages = this.agent.state.messages;

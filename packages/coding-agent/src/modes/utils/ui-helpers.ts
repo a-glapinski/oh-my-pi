@@ -516,27 +516,32 @@ export class UiHelpers {
 		this.ctx.compactionQueuedMessages = [] as CompactionQueuedMessage[];
 		this.ctx.updatePendingMessagesDisplay();
 
-		const restoreQueue = (error: unknown) => {
-			this.ctx.session.clearQueue();
-			this.ctx.compactionQueuedMessages = queuedMessages;
-			this.ctx.updatePendingMessagesDisplay();
+		let batchFailed = false;
+		const restoreQueue = (error: unknown, unsent: CompactionQueuedMessage[]) => {
+			batchFailed = true;
+			const errorDetail = error instanceof Error ? error.message : String(error);
+			const unsentText = unsent.map(m => m.text).join("\n");
 			this.ctx.showError(
-				`Failed to send queued message${queuedMessages.length > 1 ? "s" : ""}: ${
-					error instanceof Error ? error.message : String(error)
-				}`,
+				`Failed to send queued message${queuedMessages.length > 1 ? "s" : ""} after compaction: ${errorDetail}\n\nUnsent input:\n${unsentText}`,
 			);
 		};
+
+		// Track how many messages from each segment completed so the error
+		// handler can report exactly which messages the model never saw.
+		let sentCount = 0;
 
 		try {
 			if (options?.willRetry) {
 				for (const message of queuedMessages) {
 					if (this.ctx.isKnownSlashCommand(message.text)) {
+						await this.ctx.session.waitForIdle();
 						await this.ctx.session.prompt(message.text);
 					} else if (message.mode === "followUp") {
 						await this.ctx.session.followUp(message.text);
 					} else {
 						await this.ctx.session.steer(message.text);
 					}
+					sentCount++;
 				}
 				this.ctx.updatePendingMessagesDisplay();
 				return;
@@ -551,7 +556,9 @@ export class UiHelpers {
 			}
 			if (firstPromptIndex === -1) {
 				for (const message of queuedMessages) {
+					await this.ctx.session.waitForIdle();
 					await this.ctx.session.prompt(message.text);
+					sentCount++;
 				}
 				return;
 			}
@@ -561,26 +568,42 @@ export class UiHelpers {
 			const rest = queuedMessages.slice(firstPromptIndex + 1);
 
 			for (const message of preCommands) {
+				await this.ctx.session.waitForIdle();
 				await this.ctx.session.prompt(message.text);
+				sentCount++;
 			}
 
+			await this.ctx.session.waitForIdle();
+			sentCount++; // firstPrompt dispatched (even if it rejects later)
 			const promptPromise = this.ctx.session.prompt(firstPrompt.text).catch((error: unknown) => {
-				restoreQueue(error);
+				// firstPrompt failed, preCommands completed, everything from here is unsent.
+				restoreQueue(error, [firstPrompt, ...rest]);
 			});
 
 			for (const message of rest) {
+				if (batchFailed) break;
 				if (this.ctx.isKnownSlashCommand(message.text)) {
+					await this.ctx.session.waitForIdle();
+					if (batchFailed) break;
 					await this.ctx.session.prompt(message.text);
 				} else if (message.mode === "followUp") {
 					await this.ctx.session.followUp(message.text);
 				} else {
 					await this.ctx.session.steer(message.text);
 				}
+				sentCount++;
 			}
-			this.ctx.updatePendingMessagesDisplay();
-			void promptPromise;
+			// Wait for firstPrompt to settle before checking batchFailed.
+			// When rest is empty, there's no waitForIdle yield to drain the
+			// .catch() microtask, so batchFailed would still be false.
+			await promptPromise;
+			if (!batchFailed) {
+				this.ctx.updatePendingMessagesDisplay();
+			}
 		} catch (error) {
-			restoreQueue(error);
+			if (!batchFailed) {
+				restoreQueue(error, queuedMessages.slice(sentCount));
+			}
 		}
 	}
 

@@ -741,8 +741,6 @@ export const SETTINGS_SCHEMA = {
 
 	"compaction.keepRecentTokens": { type: "number", default: 20000 },
 
-	"compaction.autoContinue": { type: "boolean", default: true },
-
 	"compaction.remoteEndpoint": { type: "string", default: undefined },
 
 	// Branch summaries
@@ -1639,7 +1637,6 @@ export interface CompactionSettings {
 	reserveTokens: number;
 	keepRecentTokens: number;
 	handoffSaveToDisk: boolean;
-	autoContinue: boolean;
 	remoteEnabled: boolean;
 	remoteEndpoint: string | undefined;
 }

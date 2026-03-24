@@ -127,7 +127,6 @@ describe("AgentSession compaction Copilot initiator attribution", () => {
 			model,
 			sessionManager,
 			settings: Settings.isolated({
-				"compaction.autoContinue": false,
 				"compaction.keepRecentTokens": 1,
 			}),
 			disableExtensionDiscovery: true,

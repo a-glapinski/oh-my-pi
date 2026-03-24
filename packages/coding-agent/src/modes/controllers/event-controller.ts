@@ -492,10 +492,12 @@ export class EventController {
 					// Benign skip: no model selected, no candidate models available, or nothing
 					// to compact yet. Not a failure — suppress the warning.
 				} else {
-					// No result and no error: compaction was not needed (no preparation,
-					// no model, etc). Not a failure — just clean up the loader.
+					// No result and no error: compaction was not needed. Not a failure —
+					// just clean up the loader and continue.
 				}
-				await this.ctx.flushCompactionQueue({ willRetry: event.willRetry });
+				if (!event.liveStateStale) {
+					await this.ctx.flushCompactionQueue({ willRetry: event.willRetry });
+				}
 				this.ctx.ui.requestRender();
 				break;
 			}

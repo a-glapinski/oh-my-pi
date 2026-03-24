@@ -495,6 +495,7 @@ function createCustomToolsExtension(tools: CustomTool[]): ExtensionFactory {
 					willRetry: event.willRetry,
 					errorMessage: event.errorMessage,
 					warningMessage: event.warningMessage,
+					liveStateStale: event.liveStateStale,
 				},
 				ctx,
 			),

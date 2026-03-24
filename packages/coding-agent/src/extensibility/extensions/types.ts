@@ -573,6 +573,7 @@ export interface AutoCompactionEndEvent {
 	/** True when compaction was skipped for a benign reason (no model, no candidates, nothing to compact). */
 	skipped?: boolean;
 	warningMessage?: string;
+	liveStateStale?: boolean;
 }
 
 /** Fired when auto-retry starts */
