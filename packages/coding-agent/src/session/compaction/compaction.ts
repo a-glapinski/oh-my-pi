@@ -139,7 +139,6 @@ export interface CompactionSettings {
 	thresholdTokens?: number;
 	reserveTokens: number;
 	keepRecentTokens: number;
-	autoContinue?: boolean;
 	remoteEnabled?: boolean;
 	remoteEndpoint?: string;
 }
@@ -151,7 +150,6 @@ export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 	thresholdTokens: -1,
 	reserveTokens: 16384,
 	keepRecentTokens: 20000,
-	autoContinue: true,
 	remoteEnabled: true,
 };
 
@@ -1096,12 +1094,14 @@ export interface CompactionPreparation {
 	settings: CompactionSettings;
 }
 
-export function prepareCompaction(
+export type CompactionPreparationFailureReason = "already_compacted" | "session_needs_migration" | "nothing_to_compact";
+
+export function analyzeCompactionPreparation(
 	pathEntries: SessionEntry[],
 	settings: CompactionSettings,
-): CompactionPreparation | undefined {
+): { kind: "ready"; preparation: CompactionPreparation } | { kind: CompactionPreparationFailureReason } {
 	if (pathEntries.length > 0 && pathEntries[pathEntries.length - 1].type === "compaction") {
-		return undefined;
+		return { kind: "already_compacted" };
 	}
 
 	let prevCompactionIndex = -1;
@@ -1128,10 +1128,10 @@ export function prepareCompaction(
 
 	const cutPoint = findCutPoint(pathEntries, boundaryStart, boundaryEnd, keepRecentTokens);
 
-	// Get ID of first kept entry
+	// Get ID of first entry to keep
 	const firstKeptEntry = pathEntries[cutPoint.firstKeptEntryIndex];
 	if (!firstKeptEntry?.id) {
-		return undefined; // Session needs migration
+		return { kind: "session_needs_migration" };
 	}
 	const firstKeptEntryId = firstKeptEntry.id;
 
@@ -1161,7 +1161,7 @@ export function prepareCompaction(
 	}
 	// Nothing to summarize means compaction would be a no-op.
 	if (messagesToSummarize.length === 0 && turnPrefixMessages.length === 0) {
-		return undefined;
+		return { kind: "nothing_to_compact" };
 	}
 
 	// Get previous summary and preserved data for iterative updates
@@ -1184,17 +1184,28 @@ export function prepareCompaction(
 	}
 
 	return {
-		firstKeptEntryId,
-		messagesToSummarize,
-		turnPrefixMessages,
-		recentMessages,
-		isSplitTurn: cutPoint.isSplitTurn,
-		tokensBefore,
-		previousSummary,
-		previousPreserveData,
-		fileOps,
-		settings,
+		kind: "ready",
+		preparation: {
+			firstKeptEntryId,
+			messagesToSummarize,
+			turnPrefixMessages,
+			recentMessages,
+			isSplitTurn: cutPoint.isSplitTurn,
+			tokensBefore,
+			previousSummary,
+			previousPreserveData,
+			fileOps,
+			settings,
+		},
 	};
+}
+
+export function prepareCompaction(
+	pathEntries: SessionEntry[],
+	settings: CompactionSettings,
+): CompactionPreparation | undefined {
+	const analysis = analyzeCompactionPreparation(pathEntries, settings);
+	return analysis.kind === "ready" ? analysis.preparation : undefined;
 }
 
 // ============================================================================

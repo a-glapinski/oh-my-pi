@@ -802,7 +802,15 @@ export const SETTINGS_SCHEMA = {
 
 	"compaction.keepRecentTokens": { type: "number", default: 20000 },
 
-	"compaction.autoContinue": { type: "boolean", default: true },
+	"compaction.autoContinue": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "context",
+			label: "Auto-Continue After Compaction",
+			description: "Prompt the model to continue after compaction completes",
+		},
+	},
 
 	"compaction.remoteEndpoint": { type: "string", default: undefined },
 

@@ -104,6 +104,8 @@ export type CustomToolSessionEvent =
 			aborted: boolean;
 			willRetry: boolean;
 			errorMessage?: string;
+			warningMessage?: string;
+			liveStateStale?: boolean;
 	  }
 	| {
 			reason: "auto_retry_start";

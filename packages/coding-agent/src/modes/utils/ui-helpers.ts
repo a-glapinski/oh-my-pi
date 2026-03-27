@@ -516,16 +516,24 @@ export class UiHelpers {
 		this.ctx.compactionQueuedMessages = [] as CompactionQueuedMessage[];
 		this.ctx.updatePendingMessagesDisplay();
 
-		const restoreQueue = (error: unknown) => {
-			this.ctx.session.clearQueue();
-			this.ctx.compactionQueuedMessages = queuedMessages;
-			this.ctx.updatePendingMessagesDisplay();
+		let batchFailed = false;
+		const restoreQueue = (error: unknown, unsent: CompactionQueuedMessage[]) => {
+			batchFailed = true;
+			const errorDetail = error instanceof Error ? error.message : String(error);
+			const unsentText = unsent.map(m => m.text).join("\n");
 			this.ctx.showError(
-				`Failed to send queued message${queuedMessages.length > 1 ? "s" : ""}: ${
-					error instanceof Error ? error.message : String(error)
-				}`,
+				`Failed to send queued message${queuedMessages.length > 1 ? "s" : ""} after compaction: ${errorDetail}\n\nUnsent input:\n${unsentText}`,
 			);
 		};
+
+		// NOTE: This function runs inside a tracked post-prompt task (the compaction
+		// event handler). Any `await session.prompt()` call deadlocks because
+		// session.prompt -> #waitForPostPromptRecovery -> awaits the compaction task
+		// -> which is waiting for us to return. This is a pre-existing constraint
+		// inherited from upstream. The firstPrompt is therefore fire-and-forget.
+		// preCommands and rest slash commands use `await session.prompt()` matching
+		// upstream behavior; in practice the queue rarely contains slash commands.
+		let sentCount = 0;
 
 		try {
 			if (options?.willRetry) {
@@ -537,6 +545,7 @@ export class UiHelpers {
 					} else {
 						await this.ctx.session.steer(message.text);
 					}
+					sentCount++;
 				}
 				this.ctx.updatePendingMessagesDisplay();
 				return;
@@ -552,6 +561,7 @@ export class UiHelpers {
 			if (firstPromptIndex === -1) {
 				for (const message of queuedMessages) {
 					await this.ctx.session.prompt(message.text);
+					sentCount++;
 				}
 				return;
 			}
@@ -562,13 +572,16 @@ export class UiHelpers {
 
 			for (const message of preCommands) {
 				await this.ctx.session.prompt(message.text);
+				sentCount++;
 			}
 
 			const promptPromise = this.ctx.session.prompt(firstPrompt.text).catch((error: unknown) => {
-				restoreQueue(error);
+				restoreQueue(error, [firstPrompt, ...queuedMessages.slice(sentCount)]);
 			});
+			sentCount++;
 
 			for (const message of rest) {
+				if (batchFailed) break;
 				if (this.ctx.isKnownSlashCommand(message.text)) {
 					await this.ctx.session.prompt(message.text);
 				} else if (message.mode === "followUp") {
@@ -576,11 +589,16 @@ export class UiHelpers {
 				} else {
 					await this.ctx.session.steer(message.text);
 				}
+				sentCount++;
 			}
-			this.ctx.updatePendingMessagesDisplay();
+			if (!batchFailed) {
+				this.ctx.updatePendingMessagesDisplay();
+			}
 			void promptPromise;
 		} catch (error) {
-			restoreQueue(error);
+			if (!batchFailed) {
+				restoreQueue(error, queuedMessages.slice(sentCount));
+			}
 		}
 	}
 
