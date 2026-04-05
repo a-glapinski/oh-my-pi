@@ -487,6 +487,9 @@ export class EventController {
 					this.ctx.rebuildChatFromMessages();
 					this.ctx.statusLine.invalidate();
 					this.ctx.updateEditorTopBorder();
+					if (event.warningMessage) {
+						this.ctx.showWarning(event.warningMessage);
+					}
 				} else if (event.errorMessage) {
 					this.ctx.showWarning(event.errorMessage);
 				} else if (isHandoffAction) {
@@ -500,9 +503,12 @@ export class EventController {
 					// Benign skip: no model selected, no candidate models available, or nothing
 					// to compact yet. Not a failure — suppress the warning.
 				} else {
-					this.ctx.showWarning("Auto context-full maintenance failed; continuing without maintenance");
+					// No result and no error: compaction was not needed. Not a failure —
+					// just clean up the loader and continue.
 				}
-				await this.ctx.flushCompactionQueue({ willRetry: event.willRetry });
+				if (!event.liveStateStale) {
+					await this.ctx.flushCompactionQueue({ willRetry: event.willRetry });
+				}
 				this.ctx.ui.requestRender();
 				break;
 			}
