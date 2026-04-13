@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
+import { Effort } from "../src/model-thinking";
 import { buildAnthropicClientOptions, streamAnthropic } from "../src/providers/anthropic";
 import type { Context, Model } from "../src/types";
 import { buildAnthropicUrl } from "../src/utils/anthropic-auth";
@@ -186,6 +187,33 @@ describe("Anthropic Copilot auth config", () => {
 		});
 
 		expect(url).toBe("http://127.0.0.1:8317/v1/messages?beta=true");
+	});
+
+	it("omits unsupported thinking controls from Copilot Anthropic requests", async () => {
+		const { promise, resolve } = Promise.withResolvers<unknown>();
+		const controller = new AbortController();
+		controller.abort();
+
+		const model: Model<"anthropic-messages"> = {
+			...makeCopilotClaudeModel(),
+			thinking: {
+				mode: "anthropic-adaptive",
+				minLevel: Effort.Minimal,
+				maxLevel: Effort.XHigh,
+			},
+		};
+
+		streamAnthropic(model, testContext, {
+			apiKey: "ghu_test_copilot_token",
+			reasoning: Effort.XHigh,
+			thinkingEnabled: true,
+			signal: controller.signal,
+			onPayload: payload => resolve(payload),
+		});
+
+		const payload = (await promise) as { thinking?: unknown; output_config?: unknown };
+		expect(payload.thinking).toBeUndefined();
+		expect(payload.output_config).toBeUndefined();
 	});
 
 	it("forwards initiatorOverride to Copilot message requests", async () => {

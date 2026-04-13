@@ -1133,6 +1133,16 @@ function createClient(
 	return { client, isOAuthToken: oauthToken };
 }
 
+function stripGitHubCopilotReasoningControls(
+	model: Model<"anthropic-messages">,
+	params: MessageCreateParamsStreaming,
+): void {
+	if (model.provider !== "github-copilot") return;
+	// Copilot's Anthropic proxy rejects these controls with misleading model_not_supported errors.
+	delete params.thinking;
+	delete params.output_config;
+}
+
 function disableThinkingIfToolChoiceForced(params: MessageCreateParamsStreaming): void {
 	const toolChoice = params.tool_choice;
 	if (!toolChoice) return;
@@ -1470,6 +1480,7 @@ function buildParams(
 	if (systemBlocks) {
 		params.system = systemBlocks;
 	}
+	stripGitHubCopilotReasoningControls(model, params);
 	disableThinkingIfToolChoiceForced(params);
 	ensureMaxTokensForThinking(params, model);
 	applyPromptCaching(params, cacheControl);
