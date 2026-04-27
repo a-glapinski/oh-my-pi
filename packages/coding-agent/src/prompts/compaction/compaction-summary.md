@@ -24,8 +24,8 @@ You **MUST** use this format (sections can be omitted if not applicable):
 ## Key Decisions
 - **[Decision]**: [Brief rationale]
 
-## Next Steps
-1. [Ordered list of next actions]
+## Open Threads
+1. [Open threads or likely continuation points]
 
 ## Critical Context
 - [Important data, pending questions, references]

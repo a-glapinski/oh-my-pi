@@ -1207,11 +1207,16 @@ export class AgentSession {
 			await this.#promptWithMessage(
 				{
 					role: "developer",
-					content: [{ type: "text", text: "Continue if you have next steps." }],
+					content: [
+						{
+							type: "text",
+							text: "Continue only if the latest messages still show unfinished work. Treat older summaries and plans as background. Do not resume items that later messages completed or superseded.",
+						},
+					],
 					attribution: "agent",
 					timestamp: Date.now(),
 				},
-				"Continue if you have next steps.",
+				"Continue.",
 				{ skipPostPromptRecoveryWait: true },
 			);
 		};

@@ -3,7 +3,7 @@ RULES:
 - **MUST** preserve all information from previous summary
 - **MUST** add new progress, decisions, and context from new messages
 - **MUST** update Progress: move items from "In Progress" to "Done" when completed
-- **MUST** update "Next Steps" based on what was accomplished
+- **MUST** update "Open Threads" based on what was accomplished
 - **MUST** preserve exact file paths, function names, and error messages
 - You **MAY** remove anything no longer relevant
 
@@ -31,8 +31,8 @@ You **MUST** use this format (omit sections if not applicable):
 ## Key Decisions
 - **[Decision]**: [Brief rationale] (preserve all previous, add new)
 
-## Next Steps
-1. [Update based on current state]
+## Open Threads
+1. [Open threads or likely continuation points]
 
 ## Critical Context
 - [Preserve important context; add new if needed]

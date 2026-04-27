@@ -24,7 +24,7 @@ You **MUST** use EXACT format:
 ## Key Decisions
 - **[Decision]**: [Brief rationale]
 
-## Next Steps
-1. [What should happen next to continue]
+## Open Threads
+1. [Open threads or likely continuation points]
 
 Sections **MUST** be kept concise. You **MUST** preserve exact file paths, function names, error messages.
